@@ -1,0 +1,365 @@
+---
+title: "DABN_variable_selection"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+## Task 1)
+In this task we are going to explore which variables are relevant for first run U.S. box office ($) sales, for a set of 62 movies.
+We have 12 explanatory variables:
+
+* MPRating = MPAA Rating code, 1=G, 2=PG, 3=PG13, 4=R,
+* Budget = Production budget ($Mil),
+* Starpowr = Index of star poser,
+* Sequel = 1 if movie is a sequel, 0 if not,
+* Action = 1 if action film, 0 if not,
+* Comedy = 1 if comedy film, 0 if not,
+* Animated = 1 if animated film, 0 if not,
+* Horror = 1 if horror film, 0 if not,
+* Addict = Trailer views at traileraddict.com,
+* Cmngsoon = Message board comments at comingsoon.net,
+* Fandango = Attention at fandango.com (see Example 4.12),
+* Cntwait3 = Percentage of Fandango votes that can't wait to see
+
+
+```{r }
+data <- read.csv('movie_buzz.txt')
+```
+
+
+## Task 1 a)
+
+
+Create a `lm` object using all the 12 explanatory variables vs *logarithm* (`log` not `log10` in R) of Box office sales (colnames `BOX` in the data). Also use the `summary` function o extract the p-values read the help file for `summary.lm` to figure out where p-values are stored.
+```{r }
+lm.obj <- lm(log(BOX) ~ ., data=data)
+sum.obj  <- summary.lm(lm.obj)
+p.values <- sum.obj$coefficients[,4] #When removing the intercept and there is a mean difference, then there is an effect of the variables, because they try to capture the intercept. The variables will try to capture the mean effect (the straight line of the data). 
+```
+
+
+## Task 1 b)
+
+Perform variable selection using Holm's procedure through the `p.adjust()` function for for a family-wise error rate of $\alpha=0.05$. Store the names of the selected variables.
+```{r }
+alpha=0.05
+p.holm <-  p.adjust(p.values, method = "holm")
+names.selected <- names(which(p.holm < alpha))
+```
+
+## Task 2)
+
+In this task you will create a function that from a linear regression model builds your own $p-$values. You will in Task 3 perform simulations to get a feeling how variable selection works in a linear regression setting. To do this you will need efficient numerical algorithm since you will do many simulations. Building efficient code is a very important part of ML as many methods are very time consuming.
+
+
+We begin by extracting the relevant matrices as usual:
+```{r }
+X <- model.matrix(log(BOX)~ 1 + ., data = data)
+y <- log(data$BOX)
+```
+
+
+## Task 2a)
+
+In this task you are supposed to calculate all statistics manually by implementing their mathematical expressions, i.e. don't use `lm`.
+First calculate OLS coefficients $\hat{\beta}$ and their marginal variance. Note that  
+$$ \widehat{V[\hat{\beta} | X, y]}= \hat{\sigma}^{2}(X^TX)^{-1} $$ where $\hat{\sigma}^2$ is the estimated variance of the residuals.
+(A good way to see that you done things correctly is to compare your result with `summary(lm.obj)`)
+
+```{r }
+beta.hat <- solve((t(X)%*%X))%*%t(X)%*%y
+sigma2.hat <- sum((y-X%*%beta.hat)^2) / (nrow(X)-ncol(X))
+VX <- diag(sigma2.hat*solve(t(X)%*%X)) #marginal variance not the full covariance matrix
+
+```
+
+## Task 2b)
+
+Now we are going to create the P-values. Create $t-$ statistic for the $\beta_i$ under $H_0:\beta_i=0$ namely
+$$
+t_i = \left|\frac{\hat{\beta}_i}{\widehat{sd[\hat{\beta}_i | X, y]}} \right|
+$$
+
+and also compute the corresponding $p-$value here use that $\frac{\hat{\beta}_i}{\widehat{sd[\hat{\beta}_i | X, y]}} $ follows a student-t distribution with $n-p$ degrees of freedom (hint you need to use `pt`, and you can control that you get the correct answer by comparing with `summary(lm.obj)` ). Hint use that
+$$
+P_{0}(|T| \geq t) = P_{0}(T \leq -t)  + P_{0}(T \geq t).
+$$
+
+```{r }
+t <- abs(beta.hat/sqrt(VX))
+p <- (pt(-t, df = 49))+(pt(t, df = 49, lower.tail=F))
+```
+
+
+## Task 2c)
+Now in task 3 you will simulate new $Y$ but keep the matrix $X$ fixed, and you will extract $p$-values from a regression of simulated $Y$ on existing $X$. To do so efficiently we want to precompute as many objects as possible. Create a function that as efficiently as possible returns the $p-$values for a new y.  All operations that involve $X$ alone must not be conducted inside the function. Instead, their results should be fed into the function as additional inputs.
+
+```{r }
+
+s.beta <- solve(t(X)%*%X)%*%t(X)
+s.VX <- solve(t(X)%*%X)
+df <- nrow(X)-ncol(X)
+
+calculate.p <- function(y, X, s.beta, s.VX, df){
+  
+beta.hat <- s.beta%*%y
+sigma2.hat <- sum((y-X%*%beta.hat)^2) / df #we can keep X, because it is not used in a calculation
+VX <- diag(sigma2.hat*s.VX)
+
+t <- abs(beta.hat/sqrt(VX))
+p.values <- pt(-t, df)+pt(t, df, lower.tail=F)
+  
+return(p.values)
+}
+
+```
+
+
+## Task 2d)
+Write a loop that in each iteration simulates a `y.fake` assuming a normal distribution with mean and variance coming from the observed $y$.
+Further compute the $p-$value of this new observation using $X$ and your function `calculate.p`. Do a variable selection using both Bonferroni and Holm and store the number of selected variables except for intercept at level $\alpha=0.05$. Use this to compute the FWER. Does either of Holm's or Bonferroni's methods successfully control the FWER?
+
+```{r }
+n.sim = 100
+alpha = 0.05
+n.selected.Holm <- rep(0, n.sim)
+n.selected.BF   <- rep(0, n.sim) 
+start.time <- Sys.time()
+
+ for( i in 1:n.sim){
+   y.fake <- rnorm(length(y), mean(y), sd(y))
+   p.vals <- calculate.p(y.fake, X, s.beta, s.VX, df)
+    p.holm <- p.adjust(p.vals, "holm")[-1]
+    p.BF    <- p.adjust(p.vals, "bonferroni")[-1]
+  n.selected.Holm[i] <- sum(p.holm <= alpha)
+  n.selected.BF[i]   <- sum(p.BF <= alpha)
+ }
+FWER.Holm <-sum(n.selected.Holm>0)/n.sim
+FWER.BF <- sum(n.selected.BF>0)/n.sim
+ end.time <- Sys.time()
+ cat(n.sim, 'iterations took' , (end.time-start.time), 'sec')
+task2f.dotheycontrolFWER <- "They both control FWER"
+```
+
+
+
+## Task 2e)
+Now compute the same loop using `lm` inside the loop to get the p-values rather then your own function.
+What explains the difference in speed?
+```{r }
+
+ data.fake <- data
+ for( i in 1:n.sim){
+    y.fake <- rnorm(length(y), mean=mean(y),sd=sd(y))
+    data.fake$BOX <- exp(y.fake)
+    lm.obj.fake <- lm(y.fake~., data=data)
+    p.holm <- p.adjust(p.vals, "holm")
+    p.BF    <- p.adjust(p.vals, "bonferroni")
+    n.selected.Holm[i] <- sum(p.holm <= alpha)
+    n.selected.BF[i]   <- sum(p.BF <= alpha)
+}
+ end.time <- Sys.time()
+ cat(n.sim, 'iterations took' , (end.time-start.time), 'sec')
+ difference2e <- 
+  "There are two reasons:
+  1. In the lm-function, there are more things calculated in the function, such as the errors, leading to less speed.
+  2. In the calculate.p function, X is fixed, so they do not have to be calculated again, leading to faster calculations." 
+```
+
+## Task 3)
+
+Now that we have created an efficient algorithm for computing the p-values we are going to explore what happens when one adds several signals to the simulated data.
+
+But for comparison among singles simpler we first standardize the variables (but not center)
+```{r }
+library(caret)
+pre.obj <- preProcess(X, method="scale")
+X.scaled <- predict(pre.obj, X)
+```
+
+
+## Task 3a)
+Now that the variances of all predictors have been set to one, we need to obtain the inputs to our function `calculate.p` for this scaled data. Do this in the code chunk below
+
+```{r }
+
+s.beta <- solve((t(X.scaled)%*%X.scaled))%*%t(X.scaled)
+s.VX <- solve(t(X.scaled)%*%X.scaled)
+df <- nrow(X.scaled)-ncol(X.scaled)
+
+```
+
+
+
+## Task 3b)
+Next, we simulate fake outcomes. However, in contrast to task 2d we are not creating new $Y$ that are completely unrelated to the observed predictors in our box office sales data. More specifically, we simulate $Y$ from the linear model
+$$
+\mathbf{y}= \mathbf{X}\boldsymbol{\beta} + \boldsymbol{\varepsilon}
+$$
+where $X$ contains the scaled predictors of Task 3a). For the vector of slope coefficients $\beta$, we let $\beta_{2:5}=log(2:5)$ whereas all other elements of this vector are 0. The model errors $\epsilon$ are drawn independently from a standard normal distribution. Construct a new object `y.fake` that contains simulated outcomes from the model described here.
+```{r }
+set.seed(4456)
+signal.index <- c(2,3,4,5) #2:5 are the true signals, the 0s are fake
+beta.fake <- rep(0, dim(X)[2])
+beta.fake[signal.index ] <- log(signal.index)
+y.fake <- X.scaled%*%beta.fake+rnorm(dim(X.scaled)[1], mean = 0, sd = 1)
+```
+
+Now use your `calculate.p` function and `p.adjust` to the significant variables using Bonferroni and
+Benjamini & Hochberg correction at level $\alpha=0.15$ also calculate the False discovery ratio $fdr$
+
+```{r }
+set.seed(4456)
+alpha = 0.15
+p.vals       <- calculate.p(y.fake, X.scaled, s.beta, s.VX, df)
+p.BF         <- p.adjust(p.vals, "bonferroni")[-1]
+p.hochberg   <- p.adjust(p.vals, "BH")[-1]
+selected.BF  <- p.BF <= alpha
+selected.hochberg <- p.hochberg <= alpha
+selected.true.BF <- c(selected.BF[signal.index])
+selected.true.hochberg <- c(selected.hochberg[signal.index])
+fdp.BF   <-  sum(selected.BF[-signal.index])/sum(selected.BF)
+fdp.hochberg  <-  sum(selected.hochberg[-signal.index])/sum(selected.hochberg)
+
+
+```
+
+
+
+## Task 3c)
+
+We are now going to create a double loop where we for each magnitude of the signals compute the 
+$FWER$, $FDR$ and the power of each signal. Verify if both methods controls the $FDR$.
+In order to calculate the estimated $FWER$, $FDR$, and power it is convenient to store if the signal has been selected in a zero-one matrix (one if the variable is selected) in the inner loop. Then in the outer loop the three statistics one can computed  using the two matrices `selected.BF` and `selected.hochberg`.
+
+```{r }
+set.seed(12334)
+alpha = 0.15
+sim = 1000
+n <- dim(X)[1]
+p <- dim(X)[2]
+magnitudes <- seq(0,1,length.out = 20)
+   
+Power.Hochberg <- Power.BF         <- matrix(0, length(magnitudes),length(signal.index) )
+FWER.Hochberg  <- FWER.BF          <- rep(0, length(magnitudes))
+FDR.BF         <- FDR.Hochberg     <-  rep(0, length(magnitudes))
+selected.BF <- selected.hochberg <- matrix(0, sim, p)
+for( i in 1:length(magnitudes)){
+ mag <- magnitudes[i]
+ for( ii in 1:sim){
+   beta.fake.i <- mag * beta.fake
+   y.fake <- rnorm(n, X.scaled%*%beta.fake.i, 1) #mean is expected value B*X
+   p.vals       <- calculate.p(y.fake, X.scaled, s.beta, s.VX, df)
+    p.BF        <- p.adjust(p.vals,"bonferroni")
+    p.hochberg  <- p.adjust(p.vals,"BH")
+    selected.BF[ii,] <-  p.BF <= alpha
+    selected.hochberg[ii,] <- p.hochberg <= alpha
+   }
+  Power.BF[i,]     <- colSums(selected.BF[,signal.index])/sim
+  Power.Hochberg[i,] <- colSums(selected.hochberg[,signal.index])/sim
+  FWER.BF[i]       <- mean(rowSums(selected.BF[,-c(1,signal.index)])>0)
+  FWER.Hochberg[i]   <- mean(rowSums(selected.hochberg[,-c(1,signal.index)])>0)
+  FDR.BF[i]        <- mean(rowSums(selected.BF[,-c(1,signal.index)])/(max(rowSums(selected.BF[,-1]),1)))
+  FDR.Hochberg[i]   <-  mean(rowSums(selected.hochberg[,-c(1,signal.index)])/(max(rowSums(selected.hochberg[,-1]),1)))
+}
+
+
+
+```
+
+
+## Task 3d)
+
+We plot the power of the strongest and weakest signal vs the magnitude of the signal, have both BF and Hochberg in the same plot. Why is the difference between method larger on the weakest signal?
+
+```{r }
+plot(magnitudes,Power.BF[,1], type='l', ylim=c(0,1))
+lines(magnitudes,Power.Hochberg[,1], col='red')
+plot(magnitudes,Power.BF[,4], type='l', ylim=c(0,1))
+lines(magnitudes,Power.Hochberg[,4], col='red')
+Task3d.why.difference <- 
+
+"BF[,1] is visualizing the weakest signal, which has on average higher p-values, whilst BF[,4] is visualizing the strongest signal. For both signals, the p-values are ordered (small -> high). 
+
+The BH method rejects H0, based on q((N-i+1)/N), whereby the threshold of rejecting H0 increases with every position. The Bonferroni (BF) decision boundary (based on alpha/N) keeps constant during the positions. 
+
+On the first position, in the strongest signal, the p-values are on average larger, with lower power (1 − Beta). With a lower power, both BH and BF reject many H0, since many p-values are high and there is little difference between the calculations of the threshold at small p. 
+
+Overall, the strongest signal will have lower p-values then the weakest signal. Since the threshold of BH is based on i, the stronger the magnitude, the more it goes from 0, whilst BF stays constant. Since the p-values are ordered, a weaker signal will lead to a higher threshold of BH when magnitude is increasing."
+```
+
+## Task 3e)
+
+Now plot the FWER rates for both BF and Hochberg. What are the pattern in both lines? What causes the patterns?
+
+```{r }
+plot(magnitudes,FWER.BF, type='l', ylim=c(0,0.5))
+lines(magnitudes,FWER.Hochberg, col='red')
+Task3d.what.pattern<- "With low magnitudes, both BH and BF are close to 0.1 FWER. With increasing magnitude, FWER increases for Hochberg, whilst remaining on average constant for BF."
+Task3d.why.pattern<- "Thanks to the BH threshold increasing with the index, the FWER for BH increases with it, and the one of BF stays constant. With increasing magnitude, the p-values of the signal variables become smaller, leading to them moving to the left, whereby the order of the variables push the noise-variables to the right. Since BH threshold increases, a noise variable, not included before is now included in the new order, increasing risk of type 1 error (increasing FWER). This increasing effect slowly stops when more of the signal variables are pushed forward in the variable order, because they are only affected by the magnitude. 
+
+Since the BF threshold stays constant, the FWER does not increase when magnitude is increased. So BF does control FWER and BH does not control FWER, because for BH it is not the goal to control the rate."
+```
+
+## Task 4)
+In the article Mullainathan, Sendhil, and Jann Spiess. 2017. "Machine Learning: An Applied Econometric Approach." Journal of Economic Perspectives, 31 (2): 87-106, the authors compared several ML techniques for prediction of house prices (log of house prices). Here we will explore this data sets for variable selection (slightly cleaned by us a priori).
+First we load the data and extract the relevant data.
+```{r }
+data.ahs <- readRDS('ahs2011forjep.rdata')
+formula <- as.formula(data.ahs$getformula(data.ahs$vars))
+X <- model.matrix(formula, data.ahs$df)
+X <- X[,-1]
+y <- data.ahs$df$LOGVALUE
+```
+
+
+
+## Task 4a)
+As usual when working with lasso, we rescale the variances of all predictors and demean all variables before training any model.
+
+```{r }
+scale.X  <- preProcess(X, method = c("center", "scale"))
+X         <- predict(scale.X, X)
+y         <- y-mean(y)
+
+
+```
+
+## Task 4b)
+Now use `glmnet` to perform ten-fold cross-validation select $\lambda$ through the one sd rule. Then extract the variables selected (i.e. the variables corresponding to the non-zero coefficients of the lasso fit with selected lambda)
+```{r }
+library(glmnet)
+glm.cv.obj.lasso <- cv.glmnet(X, y, alpha = 1, type.measure = "mse", intercept = FALSE, nfolds = 10)
+beta.coeff <-  coef(glm.cv.obj.lasso, s = "lambda.1se")
+selected.names <- rownames(beta.coeff)[as.vector(beta.coeff)!=0]
+number.selected <- length(selected.names)
+```
+
+
+Now read the tutorial  [https://web.stanford.edu/group/candes/knockoffs/software/knockoffs/tutorial-3-r.html](https://web.stanford.edu/group/candes/knockoffs/software/knockoffs/tutorial-3-r.html)
+and perform controlled variables using knockoffs with the statistics.  
+$$
+Z_i  =max \{\lambda:\beta_j(\lambda) \neq 0\}.
+$$
+Here use the fixed-X option for knockoffs, and set offset to zero.
+```{r }
+
+library(knockoff)
+fdr <- 0.15
+
+result = knockoff.filter(X, y, knockoffs = create.fixed, statistic = stat.glmnet_lambdasmax, fdr=fdr, offset = 0)
+
+selected.names.knockoff <- names(result$selected)
+number.selected <- length(selected.names.knockoff)
+```
+
+
+
+
+
